@@ -15,6 +15,7 @@ def parse_args():
     parser.add_argument("--dataset", type=str, help="Specific dataset to use (optional)")
     parser.add_argument("--data_dir", type=str, default="./data", help="Directory containing CSV datasets")
     parser.add_argument("--model", type=str, default="gpt-4o", help="OpenAI model to use")
+    parser.add_argument("--output_predictions", action="store_true", help="Output predictions to CSV file")
     return parser.parse_args()
 
 def load_prompt(file_path):
@@ -127,6 +128,19 @@ def calculate_metrics(true_labels, predicted_labels):
     
     return results
 
+def save_predictions_to_csv(texts, true_labels, predicted_labels, dataset_name):
+    """Save text, true labels, and predicted labels to a CSV file"""
+    output_file = f"predictions_{os.path.basename(dataset_name).replace('.csv', '')}.csv"
+    
+    with open(output_file, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_ALL)
+        writer.writerow(["text", "true_label", "predicted_label"])
+        
+        for text, true_label, pred_label in zip(texts, true_labels, predicted_labels):
+            writer.writerow([text, true_label, pred_label])
+    
+    return output_file
+
 def main():
     args = parse_args()
     
@@ -162,6 +176,10 @@ def main():
     # Extract predicted labels with highest scores
     predicted_labels = get_highest_score_labels(predictions)
     
+    # Save predictions to CSV file
+    predictions_file = save_predictions_to_csv(texts, true_labels, predicted_labels, dataset_path)
+    print(f"Predictions saved to {predictions_file}")
+    
     # Calculate metrics
     metrics = calculate_metrics(true_labels, predicted_labels)
     
@@ -190,7 +208,8 @@ def main():
             "model": args.model,
             "examples": len(texts),
             "metrics": metrics,
-            "prompt": prompt
+            "prompt": prompt,
+            "predictions_file": predictions_file
         }, f, indent=2)
     
     print(f"\nResults saved to {results_file}")
