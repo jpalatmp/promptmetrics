@@ -95,7 +95,13 @@ def get_highest_score_labels(predictions):
     
     for pred in predictions:
         max_score_idx = np.argmax(pred["scores"])
-        predicted_labels.append(pred["labels"][max_score_idx])
+        if pred["scores"][max_score_idx] == 1.0:
+            predicted_labels.append(pred["labels"][max_score_idx])
+        else:
+            print(pred["scores"])
+            predicted_labels.append("n/a")
+
+
     
     return predicted_labels
 
