@@ -7,6 +7,7 @@ from openai import OpenAI
 from sklearn.metrics import f1_score, precision_score, recall_score
 import numpy as np
 import pandas as pd
+from datetime import datetime
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate OpenAI model on classification datasets")
@@ -14,9 +15,22 @@ def parse_args():
     parser.add_argument("--prompt", type=str, help="Prompt to send to OpenAI (alternative to prompt_file)")
     parser.add_argument("--dataset", type=str, help="Specific dataset to use (optional)")
     parser.add_argument("--data_dir", type=str, default="./data", help="Directory containing CSV datasets")
+    parser.add_argument("--output_dir", type=str, default="./results", help="Base directory for output files")
     parser.add_argument("--model", type=str, default="gpt-4o", help="OpenAI model to use")
-    parser.add_argument("--output_predictions", action="store_true", help="Output predictions to CSV file")
     return parser.parse_args()
+
+def create_output_directory(base_dir):
+    """Create a timestamped output directory structure"""
+    # Create base directory if it doesn't exist
+    if not os.path.exists(base_dir):
+        os.makedirs(base_dir)
+    
+    # Create timestamped directory
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_dir = os.path.join(base_dir, timestamp)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    return output_dir
 
 def load_prompt(file_path):
     """Load prompt from a text file"""
@@ -65,7 +79,9 @@ def get_openai_predictions(client, texts, prompt, model):
     """Get predictions from OpenAI for each text"""
     all_predictions = []
     
-    for text in texts:
+    for i, text in enumerate(texts):
+        print(f"Processing example {i+1}/{len(texts)}...")
+        
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -95,13 +111,12 @@ def get_highest_score_labels(predictions):
     
     for pred in predictions:
         max_score_idx = np.argmax(pred["scores"])
+        # predicted_labels.append(pred["labels"][max_score_idx])
         if pred["scores"][max_score_idx] == 1.0:
             predicted_labels.append(pred["labels"][max_score_idx])
         else:
             print(pred["scores"])
             predicted_labels.append("n/a")
-
-
     
     return predicted_labels
 
@@ -134,16 +149,50 @@ def calculate_metrics(true_labels, predicted_labels):
     
     return results
 
-def save_predictions_to_csv(texts, true_labels, predicted_labels, dataset_name):
+def save_predictions_to_csv(texts, true_labels, predicted_labels, predictions, output_dir, dataset_name):
     """Save text, true labels, and predicted labels to a CSV file"""
-    output_file = f"predictions_{os.path.basename(dataset_name).replace('.csv', '')}.csv"
+    output_file = os.path.join(output_dir, f"predictions_{os.path.basename(dataset_name).replace('.csv', '')}.csv")
     
     with open(output_file, 'w', newline='', encoding='utf-8') as f:
         writer = csv.writer(f, quoting=csv.QUOTE_ALL)
-        writer.writerow(["text", "true_label", "predicted_label"])
+        writer.writerow(["text", "true_label", "predicted_label", "all_labels", "all_scores"])
         
-        for text, true_label, pred_label in zip(texts, true_labels, predicted_labels):
-            writer.writerow([text, true_label, pred_label])
+        for text, true_label, pred_label, pred_data in zip(texts, true_labels, predicted_labels, predictions):
+            writer.writerow([
+                text, 
+                true_label, 
+                pred_label, 
+                json.dumps(pred_data.get("labels", [])), 
+                json.dumps(pred_data.get("scores", []))
+            ])
+    
+    return output_file
+
+def save_prompt_copy(prompt, output_dir, prompt_file=None):
+    """Save a copy of the prompt used for the evaluation"""
+    if prompt_file:
+        prompt_filename = os.path.basename(prompt_file)
+    else:
+        prompt_filename = "prompt.txt"
+    
+    output_file = os.path.join(output_dir, prompt_filename)
+    
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.write(prompt)
+    
+    return output_file
+
+def save_run_info(args, output_dir):
+    """Save the run configuration information"""
+    output_file = os.path.join(output_dir, "run_config.json")
+    
+    with open(output_file, 'w') as f:
+        json.dump({
+            "model": args.model,
+            "data_dir": args.data_dir,
+            "prompt_file": args.prompt_file,
+            "timestamp": datetime.now().isoformat(),
+        }, f, indent=2)
     
     return output_file
 
@@ -155,6 +204,14 @@ def main():
     if not api_key:
         raise ValueError("OPENAI_API_KEY environment variable not set")
     
+    # Create output directory
+    output_dir = create_output_directory(args.output_dir)
+    print(f"Output will be saved to: {output_dir}")
+    
+    # Save run configuration
+    config_file = save_run_info(args, output_dir)
+    print(f"Run configuration saved to: {config_file}")
+    
     # Get prompt from file or command line
     if args.prompt_file and os.path.exists(args.prompt_file):
         prompt = load_prompt(args.prompt_file)
@@ -163,6 +220,10 @@ def main():
         prompt = args.prompt
     else:
         raise ValueError("Either --prompt or --prompt_file must be provided")
+    
+    # Save a copy of the prompt
+    prompt_copy = save_prompt_copy(prompt, output_dir, args.prompt_file)
+    print(f"Prompt saved to: {prompt_copy}")
     
     # Initialize OpenAI client
     client = OpenAI(api_key=api_key)
@@ -183,8 +244,10 @@ def main():
     predicted_labels = get_highest_score_labels(predictions)
     
     # Save predictions to CSV file
-    predictions_file = save_predictions_to_csv(texts, true_labels, predicted_labels, dataset_path)
-    print(f"Predictions saved to {predictions_file}")
+    predictions_file = save_predictions_to_csv(
+        texts, true_labels, predicted_labels, predictions, output_dir, dataset_path
+    )
+    print(f"Predictions saved to: {predictions_file}")
     
     # Calculate metrics
     metrics = calculate_metrics(true_labels, predicted_labels)
@@ -207,18 +270,20 @@ def main():
     print(class_metrics_df.sort_values('support', ascending=False))
     
     # Save results to file
-    results_file = f"results_{os.path.basename(dataset_path).replace('.csv', '')}.json"
+    results_file = os.path.join(output_dir, f"results_{os.path.basename(dataset_path).replace('.csv', '')}.json")
     with open(results_file, 'w') as f:
         json.dump({
             "dataset": os.path.basename(dataset_path),
             "model": args.model,
             "examples": len(texts),
             "metrics": metrics,
-            "prompt": prompt,
-            "predictions_file": predictions_file
+            "timestamp": datetime.now().isoformat(),
+            "predictions_file": os.path.basename(predictions_file),
+            "prompt_file": os.path.basename(prompt_copy)
         }, f, indent=2)
     
-    print(f"\nResults saved to {results_file}")
+    print(f"Results saved to: {results_file}")
+    print(f"\nAll outputs have been saved to: {output_dir}")
 
 if __name__ == "__main__":
     main()
